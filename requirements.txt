@@ -2,3 +2,4 @@ customtkinter
 psutil
 py-cpuinfo
 gputil
+nvidia-ml-py3

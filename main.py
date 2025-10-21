@@ -12,6 +12,8 @@ import modules.stress_test as stress_test
 import modules.motherboard_info as motherboard_info
 import json
 import pprint
+import tkinter as tk
+
 
 
 
@@ -37,7 +39,6 @@ class App(ctk.CTk):
 			shape2 = ctk.CTkLabel(header, text='   ', fg_color='#3498db', width=24, height=24, corner_radius=12)
 			shape2.pack(side='left', padx=6, pady=12)
 		except Exception:
-			# older customtkinter versions may not support fg_color on labels; ignore
 			pass
 
 		title = ctk.CTkLabel(header, text="Professional System Monitor", font=ctk.CTkFont(size=20, weight="bold"))
@@ -55,15 +56,26 @@ class App(ctk.CTk):
 		content_frame.grid_rowconfigure(0, weight=1)
 		content_frame.grid_columnconfigure(0, weight=1)
 
-		# Large output textbox (monospace, larger font)
-		mono_font = ('Courier New', 12)
-		self.output = ctk.CTkTextbox(content_frame, wrap='word')
-		try:
-			# CustomTkinter supports setting font via label-like config on some versions
-			self.output.configure(font=mono_font)
-		except Exception:
-			pass
-		self.output.grid(row=0, column=0, sticky='nsew', padx=12, pady=12)
+		# Large output area using tk.Text for colored output
+		mono_font = ('Courier New', 14)
+		text_frame = ctk.CTkFrame(content_frame)
+		text_frame.grid(row=0, column=0, sticky='nsew', padx=12, pady=12)
+		text_frame.grid_rowconfigure(0, weight=1)
+		text_frame.grid_columnconfigure(0, weight=1)
+
+		self.output = tk.Text(text_frame, wrap='word', font=mono_font, bg='#0f1720', fg='white', padx=8, pady=8)
+		self.output.grid(row=0, column=0, sticky='nsew')
+
+		scrollbar = tk.Scrollbar(text_frame, command=self.output.yview)
+		scrollbar.grid(row=0, column=1, sticky='ns')
+		self.output.config(yscrollcommand=scrollbar.set)
+
+		# Configure tags for colors
+		self.output.tag_configure('key', foreground='white')
+		self.output.tag_configure('good', foreground='#2ecc71')
+		self.output.tag_configure('bad', foreground='#e74c3c')
+		self.output.tag_configure('neutral', foreground='#95a5a6')
+		self.output.tag_configure('mono', font=mono_font)
 
 		# Buttons list
 		buttons = [
@@ -90,62 +102,80 @@ class App(ctk.CTk):
 		self.footer_label.pack(side='left', padx=12)
 
 	def write_output(self, text):
-		# Accept dicts or other objects and pretty-print them for readability
-		self.output.delete('0.0', 'end')
-		if isinstance(text, (dict, list)):
-			pretty = pprint.pformat(text, width=120)
-			self.output.insert('0.0', pretty)
+		# Clear
+		self.output.configure(state='normal')
+		self.output.delete('1.0', 'end')
+		# If dict/list, render line by line with colors
+		if isinstance(text, dict):
+			# Show all keys, including None — use neutral color for missing values
+			for k, v in text.items():
+				self.output.insert('end', f"{k}: ", ('key',))
+				if v is None or (isinstance(v, str) and v.strip() == ''):
+					self.output.insert('end', f"{v}\n", ('neutral', 'mono'))
+				else:
+					if isinstance(v, (dict, list)):
+						pretty = pprint.pformat(v, width=120)
+						self.output.insert('end', pretty + '\n', ('good', 'mono'))
+					else:
+						self.output.insert('end', f"{v}\n", ('good', 'mono'))
+		elif isinstance(text, list):
+			for item in text:
+				self.output.insert('end', str(item) + '\n', ('mono',))
 		else:
-			# try to decode JSON strings into pretty JSON
+			# try to decode JSON
 			try:
 				obj = json.loads(text)
-				self.output.insert('0.0', json.dumps(obj, indent=2))
+				self.write_output(obj)
+				return
 			except Exception:
-				self.output.insert('0.0', str(text))
+				self.output.insert('end', str(text), ('mono',))
+
+		self.output.see('end')
+		self.output.configure(state='disabled')
 
 	def show_cpu_info(self):
-		self.write_output(str(cpu_info.get_cpu_info()))
+			self.write_output(cpu_info.get_cpu_info())
 
 	def show_memory_info(self):
-		self.write_output(str(memory_info.get_memory_info()))
+			self.write_output(memory_info.get_memory_info())
 
 	def show_gpu_info(self):
-		self.write_output(str(gpu_info.get_gpu_info()))
+			self.write_output(gpu_info.get_gpu_info())
 
 	def show_temps(self):
-		self.write_output(str(temps.get_temperatures()))
+			self.write_output(temps.get_temperatures())
 
 	def show_volt_power(self):
-		v = volt_power.get_voltages()
-		p = volt_power.get_power()
-		self.write_output(str({'voltages': v, 'power': p}))
+			v = volt_power.get_voltages()
+			p = volt_power.get_power()
+			self.write_output({'voltages': v, 'power': p})
 
 	def show_network_rates(self):
-		self.write_output('Measuring network rates...')
-		threading.Thread(target=lambda: self.write_output(str(network_info.get_network_rates())), daemon=True).start()
+			self.write_output({'note': 'Measuring network rates...'})
+			threading.Thread(target=lambda: self.write_output(network_info.get_network_rates()), daemon=True).start()
 
 	def show_os_info(self):
-		self.write_output(str(os_info.get_os_info()))
+			self.write_output(os_info.get_os_info())
 
 	def show_motherboard(self):
 		info = motherboard_info.get_motherboard_info()
+		# convert to display dict and let write_output filter None values
 		if 'note' in info:
-			self.write_output(info['note'])
+			self.write_output({'note': info['note']})
 			return
-		lines = []
+		display = {}
 		if info.get('manufacturer'):
-			lines.append(f"Manufacturer: {info.get('manufacturer')}")
+			display['Manufacturer'] = info.get('manufacturer')
 		if info.get('product'):
-			lines.append(f"Product: {info.get('product')}")
+			display['Product'] = info.get('product')
 		if info.get('bios_version'):
-			lines.append(f"BIOS: {info.get('bios_version')}")
+			display['BIOS'] = info.get('bios_version')
 		if info.get('chipset'):
 			chip = info.get('chipset')
-			# shorten long chipset/modalias strings
 			if len(chip) > 120:
 				chip = chip[:115] + '...'
-			lines.append(f"Chipset: {chip}")
-		self.write_output('\n'.join(lines))
+			display['Chipset'] = chip
+		self.write_output(display)
 
 	def run_stress(self, seconds=10):
 		self.write_output(f"Starting stress test for {seconds}s...\n")
@@ -153,7 +183,7 @@ class App(ctk.CTk):
 		self.write_output(f"Stress test completed ({seconds}s)")
 
 	def show_remote_stub(self):
-		self.write_output(str(remote_monitor.query_remote('host', 'user')))
+			self.write_output(remote_monitor.query_remote('host', 'user'))
 
 
 if __name__ == '__main__':
