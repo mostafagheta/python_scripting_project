@@ -3,3 +3,4 @@ psutil
 py-cpuinfo
 gputil
 nvidia-ml-py3
+fabric

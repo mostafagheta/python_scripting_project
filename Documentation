@@ -207,3 +207,231 @@ Developer/extension ideas
 - Add cross-platform fallbacks for Windows (WMI) and macOS (iStat / sysctl).
 
 If you want me to append this to `README.md` or create a `docs/` folder with separate module pages, I can do that next.
+
+
+---
+
+# Project Documentation: Professional System Monitor (Updated)
+
+## Overview
+- **Purpose**: A desktop GUI app for local and remote system monitoring on Linux, with a modern UI using `customtkinter`.
+- **Entry point**: `main.py`
+- **Modules directory**: `modules/`
+- **Features**:
+  - Local info: CPU, Memory, GPU, Temperatures, Voltages/Power, Network, OS, Motherboard.
+  - Stress test (local).
+  - Remote monitoring over SSH via Fabric, aggregated into the same GUI.
+
+## Architecture
+- **GUI**: `main.py` defines `App` (a `ctk.CTk` window) with:
+  - Left navigation buttons.
+  - Large right output area (`tk.Text`) with color tags and JSON pretty-print.
+  - Status/footer bars.
+- **Data retrieval**: Each button triggers a module function and sends returned data to `App.write_output()` for display.
+- **Remote monitor**:
+  - A dialog collects Hostname, optional IP, and User.
+  - Calls `modules.remote_monitor.query_remote(host, user, ip=...)`.
+  - Returns a dict with OS/CPU/Mem/GPU/Temps/Motherboard collected over SSH.
+
+## GUI Flow and Important Methods
+- **`App.__init__()` in `main.py`**:
+  - Builds the window layout, configures tags (`'key'`, `'good'`, `'bad'`, `'neutral'`, `'mono'`).
+  - Creates buttons mapped to handlers:
+    - `show_cpu_info()`, `show_memory_info()`, `show_gpu_info()`, `show_temps()`, `show_volt_power()`, `show_network_rates()`, `show_os_info()`, `show_motherboard()`, `run_stress()`, `show_remote_stub()`.
+- **`write_output(text)` in `main.py`**:
+  - Accepts dict/list/string/JSON string.
+  - Pretty-prints dicts with per-key coloring and safely handles `None` values.
+- **Remote dialog**: `show_remote_stub()` in `main.py`
+  - Collects inputs.
+  - On "Query" calls `remote_monitor.query_remote()` and displays the returned dict.
+
+## Modules
+
+### `modules/cpu_info.py`
+- **Function**: `get_cpu_info() -> dict`
+- **Behavior**:
+  - If `py-cpuinfo` is available: detailed brand/arch/hz.
+  - Always uses `psutil` for core/thread counts and `psutil.cpu_percent(interval=0.5)` for usage.
+- **Returns**:
+  - `{'brand', 'arch', 'hz', 'cores', 'threads', 'usage'}` plus `'error'` on exceptions.
+
+### `modules/memory_info.py`
+- **Function**: `get_memory_info() -> dict`
+- **Behavior**:
+  - `psutil.virtual_memory()` for total RAM.
+  - Best-effort detection of RAM Type/Frequency/Channel via:
+    - `dmidecode -t 17` (may require root).
+    - Fallback to `lshw -class memory -short` (if installed).
+  - Adds helpful messages if info is unavailable or requires `sudo`.
+- **Returns**:
+  - `{'Total (GB)', 'Type', 'Frequency', 'Channel'}`.
+
+### `modules/gpu_info.py`
+- **Function**: `get_gpu_info() -> dict`
+- **Behavior**:
+  - Prefers `nvidia-smi` for NVIDIA: name, memory, temperature.
+  - Otherwise uses `lspci -mm` to identify GPU devices.
+  - Attempts to read temperatures from `/sys/class/drm/.../hwmon/...`.
+  - Vendor inference via PCI vendor files (NVIDIA/AMD/Intel) when possible.
+  - Marks Intel memory as “Shared (system)”.
+- **Returns**:
+  - `{'Name', 'Vendor', 'Memory', 'Temperature'}`.
+
+### `modules/temp_info.py`
+- Comprehensive temperature utilities.
+- **Key functions**:
+  - `get_temperatures() -> dict`: Aggregates temps from:
+    - HWMON (`/sys/class/hwmon`).
+    - `sensors -A`.
+    - CPU-specific temps (`_get_cpu_temperatures()`).
+    - GPU-specific temps (`_get_gpu_temperatures()`; may call `nvidia-smi` and `gpu_info`).
+  - `get_quick_summary() -> dict[str, Optional[float]]`:
+    - Compact readings for GUI: `CPU Temperature (°C)`, `GPU Temperature (°C)`, `RAM Temperature (°C)`, `VRM Temperature (°C)`.
+  - `get_all_hwmon_sensors() -> dict`: Diagnostics dump of all HWMON entries.
+  - `get_temperature_summary() -> dict`: Max CPU/GPU temps, critical alerts, total sensors.
+- **Notes**: Gracefully handles missing tools and sensors, tolerant parsing.
+
+### `modules/volt_info.py`
+- Real-time voltage and power info.
+- **Key functions**:
+  - `get_voltages() -> dict`: From HWMON inputs (`in*_input`), `sensors -A`, and tags CPU/GPU subsets.
+  - `get_power() -> dict`:
+    - Power from HWMON (`power*_input`).
+    - Intel RAPL cumulative energy (`/sys/class/powercap/intel-rapl/.../energy_uj`).
+    - NVIDIA GPU power via `nvidia-smi --query-gpu=index,power.draw`.
+    - Computes “total” if watts are available.
+  - `get_voltages_display() -> dict[str, list]` and `get_power_display() -> dict[str, list]`: Format for GUI.
+  - `get_volt_power_panel() -> list` and `get_volt_power_summary() -> list`: Concise GUI lines.
+- **Notes**: RAPL provides cumulative energy; not instantaneous power unless sampled over time.
+
+### `modules/network.py`
+- **Function**: `get_network_rates(interval=0.5) -> dict`
+- **Behavior**:
+  - Samples `psutil.net_io_counters()` before and after a sleep to compute RX/TX bytes per second.
+- **Returns**:
+  - `{'recv_bps', 'sent_bps'}`.
+
+### `modules/os_info.py`
+- **Function**: `get_os_info() -> dict`
+- **Behavior**: Uses `platform` and `datetime` for timestamp, OS name, version, architecture.
+- **Returns**:
+  - `{'Time', 'OS Name', 'Version', 'Architecture'}`.
+
+### `modules/motherboard_info.py`
+- **Function**: `get_motherboard_info() -> dict`
+- **Behavior**:
+  - Reads `/sys/class/dmi/id/*` for board vendor/product/BIOS.
+  - Best-effort chipset info from `lspci -mm` (bridge devices).
+  - Falls back with a `note` if not available.
+- **Returns**:
+  - `{'manufacturer', 'product', 'bios_version', 'chipset'}` or `{'note': ...}`.
+
+### `modules/stress_test.py`
+- Referenced by `main.py` as `stress_test.run_stress_test(seconds)`.
+- Runs a CPU workload for the specified duration (implementation not shown here; extend as needed).
+
+### `modules/remote_monitor.py`
+- Implements Fabric-based SSH collection to mirror local info categories.
+- **Core function**: `query_remote(host, user, ip=None) -> dict`
+  - Connects using `fabric.Connection(host=ip or host, user=user, connect_timeout=6)`.
+  - Collects:
+    - `OS Info`: Python `platform` on remote, fallback `uname`.
+    - `CPU Info`: Parses `lscpu -J` or `lscpu`.
+    - `Memory Info`: `free -b` for total.
+    - `GPU Info`: `nvidia-smi` or `lspci -mm`.
+    - `Temperatures`: `sensors -A` (CPU heuristic) and `nvidia-smi` (GPU).
+    - `Motherboard`: `/sys/class/dmi/id/*`.
+  - Returns:
+    - `{'Host', 'User', 'OS Info', 'CPU Info', 'Memory Info', 'GPU Info', 'Temperatures', 'Motherboard'}`.
+    - On failure: `{'error': 'SSH connection failed to ...: <reason>'}`.
+- **Helper functions**:
+  - `_run(conn, cmd, timeout=6)`: Safe command execution with timeouts.
+  - `_parse_lscpu(text)`: JSON or plain-text parsing to brand/arch/cores/threads.
+  - `_get_os_info`, `_get_cpu_info`, `_get_mem_info`, `_get_gpu_info`, `_get_temp_summary`, `_get_motherboard`.
+
+## Used Libraries and What They Do
+
+- **customtkinter**:
+  - Modern themed widgets for Tkinter: `CTk`, `CTkFrame`, `CTkLabel`, `CTkButton`, `CTkScrollableFrame`, `CTkToplevel`.
+  - Used in `main.py` to create a dark, clean GUI.
+
+- **tkinter**:
+  - Standard Python GUI toolkit.
+  - Used for `tk.Text` output area and scrollbar in `main.py`.
+
+  - Used to avoid blocking the GUI when running longer actions (stress test, network sampling).
+
+- **psutil**:
+  - Cross-platform system information (CPU usage, memory, network I/O).
+  - Used in `cpu_info.py`, `memory_info.py` (total RAM), `network.py` (I/O counters).
+
+- **py-cpuinfo** (`cpuinfo`):
+  - Detailed CPU info including brand string, arch, frequencies.
+  - Optional; code falls back to `platform` when unavailable.
+
+- **nvidia-ml-py3** / `nvidia-smi`:
+  - Provides NVIDIA GPU information. The project invokes the CLI `nvidia-smi` in several modules.
+
+- **gputil**:
+  - GPU utilities (not directly referenced in the current code paths, but available for extensions).
+
+- **subprocess/shlex/re/os/glob** (standard library):
+  - Execute system commands and parse output (`gpu_info.py`, `memory_info.py`, `motherboard_info.py`, `temp_info.py`, `volt_info.py`).
+  - Traverse sysfs for sensors and PCI devices.
+
+- **platform/datetime**:
+  - OS info, machine architecture, and timestamp (`os_info.py`, `cpu_info.py`, `temp_info.py`, `volt_info.py`).
+
+- **Fabric**:
+  - SSH library built on `Paramiko`.
+  - Used in `modules/remote_monitor.py` to connect and run remote commands to gather the same categories of information as local.
+
+## Installation and Running
+- **Dependencies**: `requirements.txt`
+  - `customtkinter`, `psutil`, `py-cpuinfo`, `gputil`, `nvidia-ml-py3`, `fabric`
+- **Install**:
+```bash
+python3 -m pip install -r requirements.txt
+```
+- **Run GUI**:
+```bash
+python3 main.py
+```
+
+## Remote Monitoring Requirements
+- **SSH access** to remote host (keys or password; current GUI does not prompt for password).
+- **Remote tools** (improves data):
+  - `lscpu`, `free`, `sensors` (lm-sensors), `nvidia-smi`, `lspci`.
+  - Read access to `/sys/class/dmi/id/*`.
+- If missing, results will show `None` or omit certain fields gracefully.
+
+## Error Handling and Resilience
+- **Best-effort parsing** across all modules; exceptions are caught and fields may be `None` rather than failing the whole view.
+- **Timeouts**:
+  - Many subprocess and SSH commands include timeouts to avoid freezing the GUI.
+- **Remote errors**:
+  - On connection failure, `remote_monitor.query_remote()` returns an `error` entry that `write_output()` can display.
+
+## Extensibility
+- **Add new metrics**:
+  - Create a new module in `modules/`, implement a `get_*()` function that returns a simple dict/list.
+  - Add a button in `main.py` and a `show_*()` handler calling your function and passing to `write_output()`.
+- **Remote parity**:
+  - Mirror your local module’s logic with remote shell commands in `remote_monitor.py` to display equivalent remote info.
+
+## Security Notes
+- Avoid executing arbitrary commands. Current remote commands are fixed, short, and read-only.
+- Prefer SSH keys over passwords. If you need password auth, extend the dialog to accept a password and pass:
+  - `Connection(..., connect_kwargs={'password': '...'})`
+- Never log secrets.
+
+## Data Shapes Returned to GUI
+- **CPU** (`cpu_info.get_cpu_info()`): `{'brand', 'arch', 'hz', 'cores', 'threads', 'usage'}`
+- **Memory** (`memory_info.get_memory_info()`): `{'Total (GB)', 'Type', 'Frequency', 'Channel'}`
+- **GPU** (`gpu_info.get_gpu_info()`): `{'Name', 'Vendor', 'Memory', 'Temperature'}`
+- **Temps quick** (`temp_info.get_quick_summary()`): `{'CPU Temperature (°C)', 'GPU Temperature (°C)', 'RAM Temperature (°C)', 'VRM Temperature (°C)'}`
+- **Volt/Power summary** (`volt_info.get_volt_power_summary()`): `['Voltages: ...', 'Power: ...']`
+- **Network** (`network.get_network_rates()`): `{'recv_bps', 'sent_bps'}`
+- **OS** (`os_info.get_os_info()`): `{'Time', 'OS Name', 'Version', 'Architecture'}`
+- **Motherboard** (`motherboard_info.get_motherboard_info()`): `{'manufacturer', 'product', 'bios_version', 'chipset'} | {'note': ...}`
+- **Remote** (`remote_monitor.query_remote()`): `{'Host', 'User', 'OS Info', 'CPU Info', 'Memory Info', 'GPU Info', 'Temperatures', 'Motherboard'} | {'error': ...}`
