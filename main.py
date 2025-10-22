@@ -143,12 +143,24 @@ class App(ctk.CTk):
 			self.write_output(gpu_info.get_gpu_info())
 
 	def show_temps(self):
-			self.write_output(temps.get_temperatures())
+			# Show compact four-line temperature summary (CPU, GPU, RAM, VRM)
+			try:
+				q = temps.get_quick_summary()
+			except Exception:
+				q = temps.get_temperatures()
+			# Format keys to match requested output
+			display = {
+				"CPU Temperature ": q.get('CPU Temperature (°C)') if isinstance(q, dict) else None,
+				"GPU Temperature ": q.get('GPU Temperature (°C)') if isinstance(q, dict) else None,
+				"RAM Temperature ": q.get('RAM Temperature (°C)') if isinstance(q, dict) else None,
+				"VRM Temperature ": q.get('VRM Temperature (°C)') if isinstance(q, dict) else None,
+			}
+			self.write_output(display)
 
 	def show_volt_power(self):
-			v = volt_power.get_voltages()
-			p = volt_power.get_power()
-			self.write_output({'voltages': v, 'power': p})
+			# Show compact two-line volt/power summary for GUI readability
+			summary_lines = volt_power.get_volt_power_summary()
+			self.write_output(summary_lines)
 
 	def show_network_rates(self):
 			self.write_output({'note': 'Measuring network rates...'})
@@ -183,7 +195,29 @@ class App(ctk.CTk):
 		self.write_output(f"Stress test completed ({seconds}s)")
 
 	def show_remote_stub(self):
-			self.write_output(remote_monitor.query_remote('host', 'user'))
+			# Open a small dialog to get hostname, IP and username
+			top = ctk.CTkToplevel(self)
+			top.title('Remote Monitor')
+			ctk.CTkLabel(top, text='Hostname').grid(row=0, column=0, pady=6, padx=6)
+			host_entry = ctk.CTkEntry(top)
+			host_entry.grid(row=0, column=1, pady=6, padx=6)
+			ctk.CTkLabel(top, text='IP (optional)').grid(row=1, column=0, pady=6, padx=6)
+			ip_entry = ctk.CTkEntry(top)
+			ip_entry.grid(row=1, column=1, pady=6, padx=6)
+			ctk.CTkLabel(top, text='User').grid(row=2, column=0, pady=6, padx=6)
+			user_entry = ctk.CTkEntry(top)
+			user_entry.grid(row=2, column=1, pady=6, padx=6)
+
+			def do_query():
+				h = host_entry.get().strip()
+				u = user_entry.get().strip() or 'user'
+				i = ip_entry.get().strip() or None
+				res = remote_monitor.query_remote(h, u, ip=i)
+				self.write_output(res)
+				top.destroy()
+
+			btn = ctk.CTkButton(top, text='Query', command=do_query)
+			btn.grid(row=3, column=0, columnspan=2, pady=8)
 
 
 if __name__ == '__main__':

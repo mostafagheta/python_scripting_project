@@ -1,0 +1,209 @@
+Python System Monitor — Full Documentation
+
+Project summary
+
+A lightweight, modular system monitor (Linux-first) written in Python with a CustomTkinter GUI. It gathers CPU, GPU, memory, temperature, voltage and power, network, and motherboard information via small probe modules under `modules/` and shows them in a monospace, colorized GUI.
+
+Repository entrypoints
+- `main.py` — GUI application (CustomTkinter + tk.Text). Calls modules and formats output.
+- `modules/` — probe modules (each returns plain Python dicts/lists).
+
+Quick start (run locally)
+
+1. Create and activate virtualenv:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+2. Install Python deps:
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+3. (Linux) Install system helpers for better sensor coverage:
+
+```bash
+sudo apt install lm-sensors python3-tk
+sudo sensors-detect    # then follow prompts (may require reboot)
+```
+
+4. Run GUI:
+
+```bash
+python3 main.py
+```
+
+Runtime requirements and system dependencies
+
+Python packages (from `requirements.txt`)
+- `customtkinter` — modern styled Tkinter widgets and themes used by `main.py` GUI.
+- `psutil` — system metrics: memory, CPU usage, processes.
+- `py-cpuinfo` — CPU model and features.
+- `GPUtil` — optional GPU detection helpers.
+- `nvidia-ml-py3` — optional NVIDIA NVML binding (if using `nvidia-smi` style queries in Python).
+
+System-level tools (best-effort, optional but recommended)
+- `lm-sensors` (`sensors`, `sensors-detect`) — exposes hwmon sensors (temperatures, voltages, power) via kernel drivers.
+- `nvidia-smi` — preferred NVIDIA GPU metrics (power.draw, temp, memory).
+- `dmidecode`, `lshw` — hardware inventory (DIMM type/frequency, BIOS, motherboard). `dmidecode` often requires root (or NOPASSWD sudo).
+- `lspci` — PCI device listing for GPU/vendor detection.
+
+Permissions
+- `dmidecode` may need sudo; the app handles absence and shows helpful notes instead of crashing.
+- Reading `/sys/class/hwmon` is generally permitted; some vendor nodes may require elevated permissions.
+
+Project structure and responsibilities
+
+Top-level
+- `main.py` — CTk application
+  - Left navigation with buttons for each module view.
+  - `write_output()` renders dicts/lists in the text area with color tags.
+  - Button handlers call module functions and display concise summaries or detailed dumps.
+  - Remote Monitor now shows a small dialog to input Hostname/IP/User and calls `modules.remote_monitor.query_remote()`.
+
+Modules (path `modules/`)
+Each module uses a best-effort approach: prefer vendor tools, fallback to sysfs and generic utilities. Return values are plain Python data structures (dicts/lists) for easy rendering.
+
+- `modules/cpu_info.py`
+  - get_cpu_info() -> dict
+    - keys: `model` (str), `cores` (int), `threads` (int), `frequency` (MHz float or dict), other CPU features.
+  - Uses `py-cpuinfo` and `psutil`.
+
+- `modules/memory_info.py`
+  - get_memory_info() -> dict
+    - keys: `total_gb` (float), optionally `type`, `frequency`, `channel`, `per_module` details if `dmidecode` or `lshw` available.
+  - Uses `psutil` for totals; `dmidecode`/`lshw` for DIMM-specific fields (may require sudo).
+
+- `modules/gpu_info.py`
+  - get_gpu_info() -> list[dict] or dict
+    - Example per GPU: { "index": 0, "name": "GeForce ...", "vendor": "NVIDIA", "memory_total_mb": 8192, "temperature": 56.0 }
+  - Strategy: prefer `nvidia-smi` (or NVML), else `lspci` + hwmon mapping.
+
+- `modules/temp_info.py`
+  - get_temperatures() -> dict
+    - returns detailed structured temps across categories (cpu, gpu, hwmon, thermal zones).
+  - get_all_hwmon_sensors() -> list[dict]
+    - enumerates `/sys/class/hwmon` entries and normalized numeric sensors (label/file/value).
+  - get_quick_summary() -> dict
+    - compact 4-key mapping: "CPU Temperature (°C)", "GPU Temperature (°C)", "RAM Temperature (°C)", "VRM Temperature (°C)".
+  - Implementation notes: reads `/sys/class/thermal`, `/sys/class/hwmon`, `sensors` command, and `gpu_info` as fallback.
+
+- `modules/volt_info.py`
+  - get_voltages() -> dict
+    - keys often: `cpu`, `gpu`, `memory`, `motherboard`, `other`, `hwmon`, `sensors`
+    - hwmon voltage entries: { "sensor": "BAT0", "label": "in0_input", "voltage": 16.4, "file": "in0_input" }
+  - get_power() -> dict
+    - keys: `cpu`, `gpu`, `system`, `hwmon`, `rapl`, `total`
+    - RAPL entries are now returned as cumulative energy (`energy_j`) and `power` is `None` unless sampling is used.
+  - get_power_info() -> { "voltages": ..., "power": ... }
+  - GUI helpers added:
+    - `get_voltages_display()` -> Dict[str,list[str]] — human-readable lines grouped by category.
+    - `get_power_display()` -> Dict[str,list[str]] — human-readable power lines (watts or cumulative energy).
+    - `get_volt_power_panel()` -> list[str] — multi-line panel with bullets (used earlier).
+    - `get_volt_power_summary()` -> list[str] — compact two-line summary suitable for the GUI: `["Voltages: ...", "Power: ..."]`.
+  - RAPL handling: module reads `/sys/class/powercap/intel-rapl/*/energy_uj`. These are cumulative energy counters and must be sampled across time to compute instantaneous power (W). The module intentionally returns `energy_j` and `power: None` to avoid misreporting.
+
+- `modules/network.py`
+  - get_network_rates() -> dict
+    - per-interface bytes/packets rates; uses `psutil.net_io_counters(pernic=True)`.
+
+- `modules/os_info.py`
+  - get_os_info() -> dict
+    - OS name, kernel, uptime, platform details from `platform` and `psutil`.
+
+- `modules/motherboard_info.py`
+  - get_motherboard_info() -> dict
+    - manufacturer, product, BIOS version, optional chipset info from `/sys/class/dmi` or `dmidecode` fallback.
+
+- `modules/remote_monitor.py`
+  - query_remote(host, user, ip=None) -> dict
+    - placeholder that returns: `{'note': 'Remote monitoring placeholder for <host> as <user> (IP: <ip>)'}`.
+  - GUI integration: `main.py` shows a small CTk dialog to let user enter Hostname/IP/User; result printed in main panel.
+
+- `modules/stress_test.py`
+  - run_stress_test(seconds) — quick CPU-bound/IO-bound stress tasks for demo.
+
+Public function return shapes (summary)
+- Voltages:
+  - `get_voltages()` -> dict: categories -> list of {sensor,label,voltage,file,raw}
+- Power:
+  - `get_power()` -> dict: keys `cpu,gpu,hwmon,rapl,system,total` where rapl entries are {name, energy_j (float), power: None, note}
+- Temperatures:
+  - `get_quick_summary()` -> { "CPU Temperature (°C)": float, "GPU Temperature (°C)": float, ... }
+  - `get_all_hwmon_sensors()` -> [{sensor,label,file,value}, ...]
+- GUI helpers:
+  - `get_volt_power_summary()` -> list[str] (2 lines: Voltages:, Power:)
+
+GUI behavior (how data is displayed)
+- `main.py.write_output()`:
+  - Accepts dict, list, or JSON string, and renders with color tags:
+    - 'key' (white) for keys, 'good' (green) for values, 'neutral' for missing.
+  - Calls `pprint.pformat()` for dict/list pretty dumps.
+- Voltages & Power button:
+  - Now calls `volt_info.get_volt_power_summary()` and displays the two-line compact summary in the main text area.
+- Remote Monitor:
+  - Pops a small dialog (Hostname, IP, User) and prints `modules.remote_monitor.query_remote()` output.
+
+How to extend or change display behavior
+- To show full volt/power detail: change `main.py` `show_volt_power()` to call `get_volt_power_panel()` or `get_voltages()`/`get_power()` and pass dict output to `write_output`.
+- To compute instantaneous RAPL power:
+  - Implement a sampler:
+    - read `energy_uj` at t0, wait dt (e.g., 1s), read again at t1, delta_energy_j = (e1 - e0)/1_000_000 -> J, power_w = delta_energy_j / dt.
+  - Either:
+    - provide a blocking helper `sample_rapl_power(interval=1.0)` (suitable for quick on-demand call), or
+    - spawn a background thread that updates a cached power reading that GUI polls periodically (non-blocking, recommended).
+
+Troubleshooting & common issues
+
+1. Many `None` values in GUI:
+   - Means the kernel/hardware/utility didn't expose that sensor on this machine. Use `modules.temp_info.get_all_hwmon_sensors()` to inspect raw hwmon. Install `lm-sensors` or kernel modules suggested by `sensors-detect`.
+
+2. `dmidecode` fields missing:
+   - `dmidecode` normally requires root — either run the app as root (not recommended) or add a command-specific sudoers entry (e.g., `youruser ALL=(root) NOPASSWD: /usr/sbin/dmidecode`) — be careful with sudoers edits.
+
+3. GPU values missing or inaccurate:
+   - Ensure `nvidia-smi` is available and drivers installed for NVIDIA cards. For AMD, add `rocm-smi` or parse hwmon labels when available.
+
+4. RAPL produces very large numbers:
+   - Older code wrongly treated cumulative energy as instantaneous watts. Current code returns `energy_j` and `power=None`. To get watts, sample energy over time (see extension notes).
+
+Example diagnostic commands
+Run these from the project root (with .venv active) to gather debug output:
+```bash
+python3 - <<'PY'
+import json
+import modules.temp_info as t
+import modules.volt_info as v
+print('hwmon sensors:')
+print(json.dumps(t.get_all_hwmon_sensors(), indent=2))
+print('quick temps:')
+print(json.dumps(t.get_quick_summary(), indent=2))
+print('voltages:')
+print(json.dumps(v.get_voltages(), indent=2))
+print('power:')
+print(json.dumps(v.get_power(), indent=2))
+print('compact summary:')
+print('\n'.join(v.get_volt_power_summary()))
+PY
+```
+
+Testing suggestions
+- Add unit tests around small parsing helpers (hwmon normalization, lspci parsing, sensors output regex).
+- Mock sysfs nodes under a test `tmpfs` to exercise hardware parsing without hardware.
+- Add a small functional test launching `main.py` headless and verifying `get_volt_power_summary()` returns two strings.
+
+Security and permissions
+- Avoid running GUI as root. For `dmidecode`, prefer the minimal sudoers approach for only that binary if needed.
+- Do not store credentials in code. The remote monitor module is a placeholder; if you extend it to run commands remotely, use paramiko or subprocess + ssh with care (keys, no passwords in code).
+
+Developer/extension ideas
+- Background sampler service for RAPL + GPU power and push updates to GUI.
+- Add an options pane to let users map hwmon labels to VRM/RAM manually.
+- Add a persisted config (JSON) to remember remote hosts and last-used IPs, or to set sampling interval.
+- Add cross-platform fallbacks for Windows (WMI) and macOS (iStat / sysctl).
+
+If you want me to append this to `README.md` or create a `docs/` folder with separate module pages, I can do that next.
